@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   PanResponder,
   Platform,
   ScrollView,
@@ -10,13 +11,14 @@ import {
   View,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 
-const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;
-const ANTHROPIC_MODEL = 'claude-sonnet-4-6';
+const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+const OPENAI_MODEL = 'gpt-4o-mini';
 const PROMPT =
-  'responda a questao da imagem. Nao precisa de longas explicacoes, somente diga qual ou quais as alternativas corretas';
+  'Leia cuidadosamente a imagem e identifique enunciado e alternativas. Responda em duas linhas: 1) apenas a(s) alternativa(s) correta(s), ex: "A" ou "A e C". 2) uma explicacao com no maximo 30 palavras. Se estiver ilegivel, escreva: "Imagem ilegivel".';
 
 const isWeb = Platform.OS === 'web';
 
@@ -25,6 +27,7 @@ export default function App() {
   const [response, setResponse] = useState('');
   const [error, setError] = useState('');
   const [cameraReady, setCameraReady] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState('back');
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
   const videoRef = useRef(null);
@@ -32,9 +35,20 @@ export default function App() {
 
   useEffect(() => {
     if (!isWeb) return;
+
+    const stopStream = () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+    };
+
     if (screen === 'camera') {
+      const webFacingMode = cameraFacing === 'front' ? 'user' : 'environment';
+      stopStream();
+      setCameraReady(false);
       navigator.mediaDevices
-        .getUserMedia({ video: true })
+        .getUserMedia({ video: { facingMode: { ideal: webFacingMode } } })
         .then((stream) => {
           streamRef.current = stream;
           if (videoRef.current) {
@@ -47,17 +61,15 @@ export default function App() {
           setScreen('error');
         });
     } else {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-      }
+      stopStream();
       setCameraReady(false);
     }
-  }, [screen]);
+  }, [screen, cameraFacing]);
 
   const openCamera = async () => {
     setResponse('');
     setError('');
+    setCameraFacing('back');
     if (!isWeb && !permission?.granted) {
       const r = await requestPermission();
       if (!r.granted) {
@@ -70,11 +82,15 @@ export default function App() {
     setScreen('camera');
   };
 
+  const flipCamera = () => {
+    setCameraFacing((prev) => (prev === 'back' ? 'front' : 'back'));
+  };
+
   const takePhoto = async () => {
-    setScreen('loading');
     try {
       let base64;
       if (isWeb) {
+        setScreen('loading');
         const video = videoRef.current;
         const canvas = document.createElement('canvas');
         canvas.width = video.videoWidth;
@@ -82,20 +98,50 @@ export default function App() {
         canvas.getContext('2d').drawImage(video, 0, 0);
         base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
       } else {
+        setScreen('loading');
         const photo = await cameraRef.current.takePictureAsync({
           base64: true,
-          quality: 0.6,
-          skipProcessing: true,
+          quality: 1,
+          skipProcessing: false,
         });
         base64 = photo.base64;
       }
-      const text = await sendToAnthropic(base64);
-      setResponse(text);
-      setScreen('result');
+      await analyzeImage(base64);
     } catch (e) {
       setError(e?.message || String(e));
       setScreen('error');
     }
+  };
+
+  const pickFromGallery = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 1,
+        base64: true,
+      });
+
+      if (result.canceled) return;
+
+      const base64 = result.assets?.[0]?.base64;
+      if (!base64) {
+        Alert.alert('Erro', 'Nao foi possivel ler a imagem selecionada.');
+        return;
+      }
+
+      setScreen('loading');
+      await analyzeImage(base64);
+    } catch (e) {
+      setError(e?.message || String(e));
+      setScreen('error');
+    }
+  };
+
+  const analyzeImage = async (base64) => {
+    const text = await sendToOpenAI(base64);
+    setResponse(text);
+    setScreen('result');
   };
 
   const swipeResponder = useRef(
@@ -119,8 +165,19 @@ export default function App() {
             style={{ flex: 1, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }}
           />
         ) : (
-          <CameraView ref={cameraRef} style={styles.flex} facing="back" onCameraReady={() => setCameraReady(true)} />
+          <CameraView
+            ref={cameraRef}
+            style={styles.flex}
+            facing={cameraFacing}
+            onCameraReady={() => setCameraReady(true)}
+          />
         )}
+        <TouchableOpacity style={styles.flipButton} onPress={flipCamera} activeOpacity={0.8}>
+          <Ionicons name="camera-reverse" size={24} color="#fff" />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.galleryButton} onPress={pickFromGallery} activeOpacity={0.8}>
+          <Ionicons name="images" size={22} color="#fff" />
+        </TouchableOpacity>
         <View style={styles.cameraOverlay}>
           <TouchableOpacity
             style={[styles.shutter, !cameraReady && styles.shutterDisabled]}
@@ -174,36 +231,37 @@ export default function App() {
   );
 }
 
-async function sendToAnthropic(base64) {
-  if (!ANTHROPIC_API_KEY) {
+async function sendToOpenAI(base64) {
+  if (!OPENAI_API_KEY) {
     throw new Error(
-      'Configure EXPO_PUBLIC_ANTHROPIC_API_KEY no arquivo .env e reinicie o expo'
+      'Configure EXPO_PUBLIC_OPENAI_API_KEY no arquivo .env e reinicie o expo'
     );
   }
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
+      authorization: `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 1024,
+      model: OPENAI_MODEL,
+      max_tokens: 512,
       messages: [
+        {
+          role: 'system',
+          content:
+            'Voce resolve questoes a partir de imagem. A resposta deve ter exatamente duas linhas: primeira linha com alternativa(s) correta(s); segunda linha com explicacao objetiva de ate 30 palavras.',
+        },
         {
           role: 'user',
           content: [
+            { type: 'text', text: PROMPT },
             {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: 'image/jpeg',
-                data: base64,
+              type: 'image_url',
+              image_url: {
+                url: `data:image/jpeg;base64,${base64}`,
               },
             },
-            { type: 'text', text: PROMPT },
           ],
         },
       ],
@@ -214,11 +272,7 @@ async function sendToAnthropic(base64) {
     throw new Error(`Erro ${res.status}: ${body}`);
   }
   const data = await res.json();
-  const text =
-    data?.content
-      ?.map((c) => c.text)
-      .filter(Boolean)
-      .join('\n') || '(sem resposta)';
+  const text = data?.choices?.[0]?.message?.content || '(sem resposta)';
   return text.trim();
 }
 
@@ -242,6 +296,28 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     alignItems: 'center',
+  },
+  flipButton: {
+    position: 'absolute',
+    top: 56,
+    right: 20,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  galleryButton: {
+    position: 'absolute',
+    top: 56,
+    left: 20,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   shutter: {
     width: 80,
