@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   PanResponder,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,17 +18,47 @@ const ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 const PROMPT =
   'responda a questao da imagem. Nao precisa de longas explicacoes, somente diga qual ou quais as alternativas corretas';
 
+const isWeb = Platform.OS === 'web';
+
 export default function App() {
   const [screen, setScreen] = useState('home');
   const [response, setResponse] = useState('');
   const [error, setError] = useState('');
+  const [cameraReady, setCameraReady] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  useEffect(() => {
+    if (!isWeb) return;
+    if (screen === 'camera') {
+      navigator.mediaDevices
+        .getUserMedia({ video: true })
+        .then((stream) => {
+          streamRef.current = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.onloadedmetadata = () => setCameraReady(true);
+          }
+        })
+        .catch((e) => {
+          setError(e?.message || String(e));
+          setScreen('error');
+        });
+    } else {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      setCameraReady(false);
+    }
+  }, [screen]);
 
   const openCamera = async () => {
     setResponse('');
     setError('');
-    if (!permission?.granted) {
+    if (!isWeb && !permission?.granted) {
       const r = await requestPermission();
       if (!r.granted) {
         setError('Permissão de câmera negada');
@@ -35,19 +66,30 @@ export default function App() {
         return;
       }
     }
+    setCameraReady(false);
     setScreen('camera');
   };
 
   const takePhoto = async () => {
-    if (!cameraRef.current) return;
     setScreen('loading');
     try {
-      const photo = await cameraRef.current.takePictureAsync({
-        base64: true,
-        quality: 0.6,
-        skipProcessing: true,
-      });
-      const text = await sendToAnthropic(photo.base64);
+      let base64;
+      if (isWeb) {
+        const video = videoRef.current;
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+      } else {
+        const photo = await cameraRef.current.takePictureAsync({
+          base64: true,
+          quality: 0.6,
+          skipProcessing: true,
+        });
+        base64 = photo.base64;
+      }
+      const text = await sendToAnthropic(base64);
       setResponse(text);
       setScreen('result');
     } catch (e) {
@@ -69,15 +111,23 @@ export default function App() {
   if (screen === 'camera') {
     return (
       <View style={styles.flex}>
-        <CameraView ref={cameraRef} style={styles.flex} facing="back">
-          <View style={styles.cameraOverlay}>
-            <TouchableOpacity
-              style={styles.shutter}
-              onPress={takePhoto}
-              activeOpacity={0.7}
-            />
-          </View>
-        </CameraView>
+        {isWeb ? (
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            style={{ flex: 1, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }}
+          />
+        ) : (
+          <CameraView ref={cameraRef} style={styles.flex} facing="back" onCameraReady={() => setCameraReady(true)} />
+        )}
+        <View style={styles.cameraOverlay}>
+          <TouchableOpacity
+            style={[styles.shutter, !cameraReady && styles.shutterDisabled]}
+            onPress={cameraReady ? takePhoto : undefined}
+            activeOpacity={0.7}
+          />
+        </View>
         <StatusBar style="light" />
       </View>
     );
@@ -187,11 +237,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#1f2937',
   },
   cameraOverlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
+    position: 'absolute',
+    bottom: 60,
+    left: 0,
+    right: 0,
     alignItems: 'center',
-    paddingBottom: 60,
-    backgroundColor: 'transparent',
   },
   shutter: {
     width: 80,
@@ -200,6 +250,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderWidth: 6,
     borderColor: 'rgba(0,0,0,0.4)',
+  },
+  shutterDisabled: {
+    opacity: 0.3,
   },
   resultContainer: {
     padding: 24,
