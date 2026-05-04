@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "PhotoChat",
+    "slug": "photo-chat",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.example.photochat",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Usado para tirar fotos das questões e enviar para análise"
+      }
+    },
+    "android": {
+      "package": "com.example.photochat",
+      "permissions": ["android.permission.CAMERA"]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Usado para tirar fotos das questões e enviar para análise"
+        }
+      ]
+    ]
+  }
+}
