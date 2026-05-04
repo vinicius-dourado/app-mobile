@@ -6,6 +6,9 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
+    "web": {
+      "bundler": "metro"
+    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.example.photochat",

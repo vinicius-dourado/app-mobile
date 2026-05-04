@@ -30,6 +30,14 @@ npx expo start
 
 Abra com o app **Expo Go** (Android/iOS) ou rode em um simulador. Como o app usa a câmera nativa, prefira testar em um dispositivo físico.
 
+### Testando no navegador
+
+```bash
+npx expo start --web
+```
+
+O app já manda o header `anthropic-dangerous-direct-browser-access: true` para contornar o CORS. **Use só em desenvolvimento** — sua chave fica exposta no bundle do browser e qualquer um pode inspecionar/usar. Para produção, sempre proxy via backend.
+
 ## Arquivos principais
 
 - `App.js` — toda a UI e lógica (4 estados: home / camera / loading / result|error)
